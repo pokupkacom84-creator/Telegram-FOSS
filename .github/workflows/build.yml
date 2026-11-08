@@ -1,10 +1,10 @@
 name: Build APK
 
 on:
-  workflow_dispatch:   # только ручной запуск
+  workflow_dispatch:
 
 permissions:
-  contents: read       # минимальные права
+  contents: read
 
 jobs:
   build:
@@ -22,17 +22,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: Restore keystore and Firebase config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
-          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > TMessagesProj_App/google-services.json
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > TMessagesProj_App/google-services.json
+          fi
 
       - name: Build
         run: ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon
