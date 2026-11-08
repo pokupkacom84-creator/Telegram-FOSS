@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +33,20 @@ jobs:
             echo "Secrets APP_ID / APP_HASH are empty"; exit 1
           fi
           printf 'APP_ID = %s\nAPP_HASH = %s\n' "$APP_ID" "$APP_HASH" > API_KEYS
+
+      - name: Build native libs (ffmpeg, libvpx, boringssl)
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y yasm nasm ninja-build
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529"
+          export NDK="$ANDROID_HOME/ndk/21.4.7075529"
+          export ANDROID_NDK_HOME="$NDK"
+          cd TMessagesProj/jni
+          chmod +x build_*.sh
+          ./build_ffmpeg_clang.sh
+          ./build_libvpx_clang.sh
+          ./build_boringssl.sh
 
       - name: Build
         run: ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon
