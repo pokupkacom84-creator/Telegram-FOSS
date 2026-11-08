@@ -1,0 +1,48 @@
+name: Build APK
+
+on:
+  workflow_dispatch:   # только ручной запуск
+
+permissions:
+  contents: read       # минимальные права
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ORG_GRADLE_PROJECT_APP_ID: ${{ secrets.APP_ID }}
+      ORG_GRADLE_PROJECT_APP_HASH: ${{ secrets.APP_HASH }}
+      ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ github.workspace }}/release.keystore
+      ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Restore keystore and Firebase config
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > TMessagesProj_App/google-services.json
+
+      - name: Build
+        run: ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f release.keystore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: TMessagesProj_App/build/outputs/apk/**/*.apk
+          retention-days: 3
