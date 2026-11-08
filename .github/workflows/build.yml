@@ -10,13 +10,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      ORG_GRADLE_PROJECT_APP_ID: ${{ secrets.APP_ID }}
-      ORG_GRADLE_PROJECT_APP_HASH: ${{ secrets.APP_HASH }}
-      ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ github.workspace }}/release.keystore
-      ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,25 +23,52 @@ jobs:
       - name: Accept Android licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
-      - name: Restore keystore and Firebase config
+      - name: Create API_KEYS
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_HASH: ${{ secrets.APP_HASH }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            printf '%s' "$GOOGLE_SERVICES_JSON" > TMessagesProj_App/google-services.json
+          if [ -z "$APP_ID" ] || [ -z "$APP_HASH" ]; then
+            echo "Secrets APP_ID / APP_HASH are empty"; exit 1
           fi
+          printf 'APP_ID = %s\nAPP_HASH = %s\n' "$APP_ID" "$APP_HASH" > API_KEYS
 
       - name: Build
         run: ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon
 
-      - name: Remove keystore
+      - name: Sign APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          KS="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            export STORE_PASS="$KEYSTORE_PASSWORD" KPASS="$KEY_PASSWORD" ALIAS="$KEY_ALIAS"
+          else
+            echo "No keystore secret: creating a temporary key"
+            export STORE_PASS="$(openssl rand -hex 16)" ALIAS=temp
+            export KPASS="$STORE_PASS"
+            keytool -genkeypair -keystore "$KS" -alias temp -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass "$STORE_PASS" -keypass "$KPASS" -dname "CN=MyClient"
+          fi
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          APK="$(find TMessagesProj_App/build/outputs/apk -name '*.apk' | head -1)"
+          echo "Signing $APK"
+          mkdir -p signed
+          "$APKSIGNER" sign --ks "$KS" --ks-key-alias "$ALIAS" \
+            --ks-pass env:STORE_PASS --key-pass env:KPASS \
+            --out signed/app-signed.apk "$APK"
+
+      - name: Cleanup secrets
         if: always()
-        run: rm -f release.keystore
+        run: rm -f API_KEYS "$RUNNER_TEMP/release.keystore"
 
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: TMessagesProj_App/build/outputs/apk/**/*.apk
+          path: signed/app-signed.apk
           retention-days: 3
