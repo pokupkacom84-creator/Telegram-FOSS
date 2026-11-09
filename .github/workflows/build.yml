@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,8 +21,8 @@ jobs:
         with:
           go-version: stable
 
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build nasm yasm make cmake perl
 
       - name: Android SDK licenses and packages
         run: |
@@ -30,11 +30,31 @@ jobs:
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses > /dev/null || true
           "$SDKM" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
-          # Версию NDK берём из build.gradle проекта (строка ndkVersion)
           NDK=$(grep -rhoE 'ndkVersion[ =]+"[0-9.]+"' --include=build.gradle . | head -1 | grep -oE '[0-9.]+' | head -1)
           [ -n "$NDK" ] && "$SDKM" "ndk;$NDK" || true
 
-      - name: Build
+      - name: Create API_KEYS
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_HASH: ${{ secrets.APP_HASH }}
+        run: |
+          # Если секреты не заданы, подставляются заглушки: сборка пройдёт, но вход в аккаунт работать не будет
+          printf 'APP_ID = %s\nAPP_HASH = %s\n' "${APP_ID:-12345}" "${APP_HASH:-aaaaaaaabbbbbbccccccfffffff001122}" > API_KEYS
+
+      - name: Build native libraries (libvpx, ffmpeg, boringssl)
+        run: |
+          export NDK=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | head -1)
+          export NINJA_PATH=$(which ninja)
+          echo "NDK=$NDK"
+          cd TMessagesProj/jni
+          chmod +x *.sh
+          ./build_libvpx_clang.sh
+          ./build_ffmpeg_clang.sh
+          ./patch_ffmpeg.sh
+          ./patch_boringssl.sh
+          ./build_boringssl.sh
+
+      - name: Build APK
         run: |
           chmod +x gradlew
           ./gradlew assembleAfatRelease --no-daemon --stacktrace
