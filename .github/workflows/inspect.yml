@@ -1,0 +1,28 @@
+name: Inspect code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show code
+        run: |
+          F=TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+          echo "===== VERSION ====="
+          grep -n "BUILD_VERSION" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java | head -5
+          echo "===== FILES ====="
+          ls TMessagesProj/src/main/java/org/telegram/ui/ | grep -i -E "settings|profile" | head -30
+          wc -l "$F"
+          echo "===== ROW DECLARATIONS ====="
+          grep -nE "^\s+(private )?int [A-Za-z, ]*(usernameRow|numberRow|languageRow|bioRow)" "$F" | head -10
+          echo "===== ROW ASSIGNMENTS ====="
+          grep -nE -B2 -A4 "(usernameRow|languageRow|numberRow|bioRow) = " "$F" | head -120
+          echo "===== BIND/CLICK ====="
+          grep -nE -B1 -A10 "== (usernameRow|languageRow)" "$F" | head -140
+          echo "===== STRING API ====="
+          grep -nE "LocaleController\.getString\(" "$F" | head -5
