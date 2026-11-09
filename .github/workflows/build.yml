@@ -1,7 +1,11 @@
-name: Build APK
+name: Build FluxGram
 
 on:
   workflow_dispatch:
+
+env:
+  APP_NAME: FluxGram
+  APP_PACKAGE: com.fluxgram.app
 
 jobs:
   build:
@@ -24,6 +28,35 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build nasm yasm make cmake perl
 
+      - name: Rebrand to FluxGram
+        run: |
+          # 1. Имя пакета (applicationId) во всех build.gradle
+          find . -name build.gradle -not -path "./TMessagesProj/jni/*" -print0 | xargs -0 sed -i -E \
+            "s/applicationId[ =]+[\"'][^\"']*[\"']/applicationId \"$APP_PACKAGE\"/"
+          # 2. Название приложения и текст "Telegram" в строках интерфейса (только текст, не имена ключей и не ссылки)
+          python3 - <<'PY'
+          import re, glob, os
+          name = os.environ["APP_NAME"]
+          pat = re.compile(r'(<string\b[^>]*>)(.*?)(</string>)', re.S)
+          def fix(m):
+              head, body, tail = m.groups()
+              body = re.sub(r'(?<![/@.\w])Telegram(?![\w/.])', name, body)
+              return head + body + tail
+          count = 0
+          for f in glob.glob('TMessagesProj/src/main/res/values*/strings*.xml'):
+              s = open(f, encoding='utf-8').read()
+              n = pat.sub(fix, s)
+              if n != s:
+                  open(f, 'w', encoding='utf-8').write(n)
+                  count += 1
+          print("changed files:", count)
+          PY
+          # 3. Явно задаём название приложения
+          sed -i -E "s#(<string name=\"AppName(Beta)?\"[^>]*>)[^<]*#\1$APP_NAME#" TMessagesProj/src/main/res/values/strings.xml
+          echo "--- проверка ---"
+          grep -rn "applicationId" --include=build.gradle . | grep -v jni || true
+          grep -n 'name="AppName' TMessagesProj/src/main/res/values/strings.xml || true
+
       - name: Android SDK licenses and packages
         run: |
           set +o pipefail
@@ -38,14 +71,12 @@ jobs:
           APP_ID: ${{ secrets.APP_ID }}
           APP_HASH: ${{ secrets.APP_HASH }}
         run: |
-          # Если секреты не заданы, подставляются заглушки: сборка пройдёт, но вход в аккаунт работать не будет
           printf 'APP_ID = %s\nAPP_HASH = %s\n' "${APP_ID:-12345}" "${APP_HASH:-aaaaaaaabbbbbbccccccfffffff001122}" > API_KEYS
 
       - name: Build native libraries (libvpx, ffmpeg, boringssl)
         run: |
           export NDK=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | head -1)
           export NINJA_PATH=$(which ninja)
-          echo "NDK=$NDK"
           cd TMessagesProj/jni
           chmod +x *.sh
           ./build_libvpx_clang.sh
@@ -61,5 +92,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apk
+          name: FluxGram-apk
           path: "**/build/outputs/apk/**/*.apk"
