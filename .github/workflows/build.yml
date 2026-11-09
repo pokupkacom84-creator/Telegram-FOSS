@@ -57,6 +57,190 @@ jobs:
           grep -rn "applicationId" --include=build.gradle . | grep -v jni || true
           grep -n 'name="AppName' TMessagesProj/src/main/res/values/strings.xml || true
 
+      - name: Add ID in profile and FluxGram settings
+        run: |
+          python3 - <<'PY'
+          import re
+          import sys
+
+          UI = "TMessagesProj/src/main/java/org/telegram/ui/"
+          P = UI + "ProfileActivity.java"
+          s = open(P, encoding="utf-8").read()
+
+
+          def one(name, pat, fn):
+              global s
+              ms = list(re.finditer(pat, s))
+              if len(ms) != 1:
+                  print("FAIL %s: matches=%d" % (name, len(ms)))
+                  sys.exit(1)
+              m = ms[0]
+              s = s[:m.start()] + fn(m) + s[m.end():]
+              print("ok", name)
+
+
+          # 1. поля
+          one("decl", r"private int languageRow;",
+              lambda m: "private int languageRow;\n    private int fluxRow;\n    private int idRow;")
+
+          # 2. сброс в updateRowsIds
+          one("reset-lang", r"\n([ \t]*)languageRow = -1;",
+              lambda m: m.group(0) + "\n" + m.group(1) + "fluxRow = -1;")
+          one("reset-user", r"\n([ \t]*)usernameRow = -1;",
+              lambda m: m.group(0) + "\n" + m.group(1) + "idRow = -1;")
+
+          # 3. строка «FluxGram» в настройках (после «Язык»)
+          one("assign-flux", r"\n([ \t]*)languageRow = rowCount\+\+;",
+              lambda m: m.group(0) + "\n" + m.group(1) + "fluxRow = rowCount++;")
+
+          # 4. строка ID в профиле пользователя (перед username)
+          one("assign-id-user",
+              r"\n([ \t]*)if \(user != null && username != null\) \{\s*\n\s*usernameRow = rowCount\+\+;",
+              lambda m: "\n" + m.group(1) + "if (FluxSettingsActivity.showId()) {\n" + m.group(1)
+              + "    idRow = rowCount++;\n" + m.group(1) + "}" + m.group(0))
+
+          # 5. строка ID в профиле чата/канала (по возможности, осторожно)
+          lines = s.split("\n")
+          patched = 0
+          for i in reversed(range(len(lines))):
+              if not re.match(r"\s*usernameRow = rowCount\+\+;", lines[i]):
+                  continue
+              ind = len(lines[i]) - len(lines[i].lstrip())
+              j = i - 1
+              while j >= 0 and (not lines[j].strip() or (len(lines[j]) - len(lines[j].lstrip())) >= ind):
+                  j -= 1
+              if j < 0:
+                  continue
+              head = lines[j].strip()
+              near = "\n".join(lines[max(0, j - 4):j + 1])
+              if (head.startswith("if (") and "username" in head.lower()
+                      and "user != null" not in head and "idRow = rowCount" not in near):
+                  pad = lines[j][:len(lines[j]) - len(lines[j].lstrip())]
+                  lines[j:j] = [pad + "if (FluxSettingsActivity.showId()) {", pad + "    idRow = rowCount++;", pad + "}"]
+                  patched += 1
+          s = "\n".join(lines)
+          print("chat id rows patched:", patched)
+
+          # 6. типы ячеек и кликабельность
+          one("type-detail",
+              r"position == phoneRow\s*\|\|\s*position == locationRow\s*\|\|\s*position == numberRow\s*\|\|\s*position == birthdayRow",
+              lambda m: m.group(0) + " || position == idRow")
+          one("type-text", r"position == languageRow\s*\|\|\s*position == dataRow",
+              lambda m: "position == fluxRow || " + m.group(0))
+          one("enabled", r"return\s+position == notificationRow\s*\|\|\s*position == numberRow",
+              lambda m: "return position == idRow || position == fluxRow || position == notificationRow || position == numberRow")
+
+          # 7. отрисовка
+          one("bind-flux",
+              r"\} else if \(position == languageRow\) \{\s*\n\s*textCell\.setTextAndValueAndIcon",
+              lambda m: "} else if (position == fluxRow) {\n"
+              "                        textCell.setTextAndIcon(\"FluxGram\", R.drawable.msg2_discussion, true);\n"
+              "                    " + m.group(0))
+          one("bind-id",
+              r"\} else if \(position == usernameRow\) \{\s*\n\s*String username = null;",
+              lambda m: "} else if (position == idRow) {\n"
+              "                        detailCell.setTextAndValue(getFluxIdText(), \"ID\", true);\n"
+              "                    " + m.group(0))
+
+          # 8. нажатия
+          one("click-flux",
+              r"\} else if \(position == languageRow\) \{\s*\n\s*presentFragment\(new LanguageSelectActivity\(\)\);",
+              lambda m: "} else if (position == fluxRow) {\n"
+              "                presentFragment(new FluxSettingsActivity());\n"
+              "            " + m.group(0))
+          one("click-id",
+              r"\} else if \(position == usernameRow\) \{\s*\n\s*processOnClickOrPress\(position, view, x, y\);",
+              lambda m: "} else if (position == idRow) {\n"
+              "                AndroidUtilities.addToClipboard(getFluxIdText());\n"
+              "                android.widget.Toast.makeText(getParentActivity(), \"ID скопирован\", android.widget.Toast.LENGTH_SHORT).show();\n"
+              "            " + m.group(0))
+
+          # 9. метод получения ID
+          one("id-method", r"private boolean processOnClickOrPress\(",
+              lambda m: "private String getFluxIdText() {\n"
+              "        if (userId != 0) {\n"
+              "            return String.valueOf(userId);\n"
+              "        }\n"
+              "        if (currentChat != null && ChatObject.isChannel(currentChat)) {\n"
+              "            return \"-100\" + chatId;\n"
+              "        }\n"
+              "        return \"-\" + chatId;\n"
+              "    }\n\n"
+              "    " + m.group(0))
+
+          open(P, "w", encoding="utf-8").write(s)
+
+          # 10. экран настроек FluxGram
+          java = '''package org.telegram.ui;
+
+          import android.content.Context;
+          import android.view.View;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+
+          import org.telegram.messenger.ApplicationLoader;
+          import org.telegram.messenger.R;
+          import org.telegram.ui.ActionBar.ActionBar;
+          import org.telegram.ui.ActionBar.BaseFragment;
+          import org.telegram.ui.ActionBar.Theme;
+          import org.telegram.ui.Cells.TextCheckCell;
+
+          public class FluxSettingsActivity extends BaseFragment {
+
+              private static final String PREFS = "fluxgram";
+              public static final String KEY_SHOW_ID = "show_id";
+
+              public static boolean showId() {
+                  return ApplicationLoader.applicationContext
+                          .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                          .getBoolean(KEY_SHOW_ID, true);
+              }
+
+              private static void saveBool(String key, boolean value) {
+                  ApplicationLoader.applicationContext
+                          .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                          .edit().putBoolean(key, value).apply();
+              }
+
+              @Override
+              public View createView(Context context) {
+                  actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+                  actionBar.setAllowOverlayTitle(true);
+                  actionBar.setTitle("FluxGram");
+                  actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
+                      @Override
+                      public void onItemClick(int id) {
+                          if (id == -1) {
+                              finishFragment();
+                          }
+                      }
+                  });
+
+                  ScrollView scroll = new ScrollView(context);
+                  scroll.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                  LinearLayout list = new LinearLayout(context);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  scroll.addView(list, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+
+                  final TextCheckCell showIdCell = new TextCheckCell(context);
+                  showIdCell.setBackground(Theme.getSelectorDrawable(false));
+                  showIdCell.setTextAndCheck("Показывать ID в профиле", showId(), false);
+                  showIdCell.setOnClickListener(v -> {
+                      boolean value = !showIdCell.isChecked();
+                      showIdCell.setChecked(value);
+                      saveBool(KEY_SHOW_ID, value);
+                  });
+                  list.addView(showIdCell, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                  fragmentView = scroll;
+                  return fragmentView;
+              }
+          }
+          '''
+          open(UI + "FluxSettingsActivity.java", "w", encoding="utf-8").write(java)
+          print("FluxSettingsActivity.java written")
+          PY
+
       - name: Android SDK licenses and packages
         run: |
           set +o pipefail
