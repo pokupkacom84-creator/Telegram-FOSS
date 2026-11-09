@@ -2,6 +2,15 @@ name: Inspect code
 
 on:
   workflow_dispatch:
+    inputs:
+      lines:
+        description: "Доп. диапазон строк ProfileActivity, например 9000-9060 (можно пусто)"
+        required: false
+        default: ""
+      pattern:
+        description: "Доп. поиск по regex в ProfileActivity (можно пусто)"
+        required: false
+        default: ""
 
 jobs:
   inspect:
@@ -11,18 +20,28 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Show code
+        env:
+          LINES: ${{ inputs.lines }}
+          PATTERN: ${{ inputs.pattern }}
         run: |
           F=TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
-          echo "===== VERSION ====="
-          grep -n "BUILD_VERSION" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java | head -5
-          echo "===== FILES ====="
-          ls TMessagesProj/src/main/java/org/telegram/ui/ | grep -i -E "settings|profile" | head -30
-          wc -l "$F"
-          echo "===== ROW DECLARATIONS ====="
-          grep -nE "^\s+(private )?int [A-Za-z, ]*(usernameRow|numberRow|languageRow|bioRow)" "$F" | head -10
-          echo "===== ROW ASSIGNMENTS ====="
-          grep -nE -B2 -A4 "(usernameRow|languageRow|numberRow|bioRow) = " "$F" | head -120
-          echo "===== BIND/CLICK ====="
-          grep -nE -B1 -A10 "== (usernameRow|languageRow)" "$F" | head -140
-          echo "===== STRING API ====="
-          grep -nE "LocaleController\.getString\(" "$F" | head -5
+          echo "===== A. rows for other users/chats (8636-8700) ====="
+          awk 'NR>=8636 && NR<=8700 {print NR": "$0}' "$F"
+          echo "===== B. all lines with usernameRow ====="
+          grep -n "usernameRow" "$F"
+          echo "===== C. all lines with languageRow ====="
+          grep -n "languageRow" "$F"
+          echo "===== D. context of 'position == usernameRow' and 'position == languageRow' ====="
+          grep -nE -B2 -A12 "position == (usernameRow|languageRow)" "$F" | head -150
+          echo "===== E. string API ====="
+          grep -nE "LocaleController\.getString\(" "$F" | head -3
+          grep -nE "LocaleController\.getString\(" TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java | head -3
+          if [ -n "$LINES" ]; then
+            S=${LINES%-*}; E=${LINES#*-}
+            echo "===== EXTRA lines $LINES ====="
+            awk -v s="$S" -v e="$E" 'NR>=s && NR<=e {print NR": "$0}' "$F"
+          fi
+          if [ -n "$PATTERN" ]; then
+            echo "===== EXTRA grep $PATTERN ====="
+            grep -nE -B2 -A8 "$PATTERN" "$F" | head -150
+          fi
