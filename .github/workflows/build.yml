@@ -179,11 +179,14 @@ jobs:
           import android.widget.ScrollView;
 
           import org.telegram.messenger.ApplicationLoader;
+          import org.telegram.messenger.GhostMode;
           import org.telegram.messenger.R;
           import org.telegram.ui.ActionBar.ActionBar;
           import org.telegram.ui.ActionBar.BaseFragment;
           import org.telegram.ui.ActionBar.Theme;
+          import org.telegram.ui.Cells.HeaderCell;
           import org.telegram.ui.Cells.TextCheckCell;
+          import org.telegram.ui.Cells.TextInfoPrivacyCell;
 
           public class FluxSettingsActivity extends BaseFragment {
 
@@ -200,6 +203,35 @@ jobs:
                   ApplicationLoader.applicationContext
                           .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                           .edit().putBoolean(key, value).apply();
+              }
+
+              private void addHeader(LinearLayout list, Context context, String text) {
+                  HeaderCell header = new HeaderCell(context);
+                  header.setText(text);
+                  list.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+              }
+
+              private void addInfo(LinearLayout list, Context context, String text) {
+                  TextInfoPrivacyCell info = new TextInfoPrivacyCell(context);
+                  info.setText(text);
+                  info.setBackground(Theme.getThemedDrawableByKey(context, R.drawable.greydivider, Theme.key_windowBackgroundGrayShadow));
+                  list.addView(info, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+              }
+
+              private void addToggle(LinearLayout list, Context context, String text, final String key, boolean checked, boolean divider, final boolean ghost) {
+                  final TextCheckCell cell = new TextCheckCell(context);
+                  cell.setBackground(Theme.getSelectorDrawable(false));
+                  cell.setTextAndCheck(text, checked, divider);
+                  cell.setOnClickListener(v -> {
+                      boolean value = !cell.isChecked();
+                      cell.setChecked(value);
+                      if (ghost) {
+                          GhostMode.set(key, value);
+                      } else {
+                          saveBool(key, value);
+                      }
+                  });
+                  list.addView(cell, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
               }
 
               @Override
@@ -222,15 +254,21 @@ jobs:
                   list.setOrientation(LinearLayout.VERTICAL);
                   scroll.addView(list, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
 
-                  final TextCheckCell showIdCell = new TextCheckCell(context);
-                  showIdCell.setBackground(Theme.getSelectorDrawable(false));
-                  showIdCell.setTextAndCheck("Показывать ID в профиле", showId(), false);
-                  showIdCell.setOnClickListener(v -> {
-                      boolean value = !showIdCell.isChecked();
-                      showIdCell.setChecked(value);
-                      saveBool(KEY_SHOW_ID, value);
-                  });
-                  list.addView(showIdCell, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+                  addHeader(list, context, "Режим призрака");
+                  addToggle(list, context, "Режим призрака", GhostMode.KEY_ENABLED, GhostMode.isOn(), true, true);
+                  addToggle(list, context, "Не читать сообщения", GhostMode.KEY_NO_READ, GhostMode.get(GhostMode.KEY_NO_READ, true), true, true);
+                  addToggle(list, context, "Не читать истории", GhostMode.KEY_NO_STORIES, GhostMode.get(GhostMode.KEY_NO_STORIES, true), true, true);
+                  addToggle(list, context, "Не отправлять «онлайн»", GhostMode.KEY_NO_ONLINE, GhostMode.get(GhostMode.KEY_NO_ONLINE, true), true, true);
+                  addToggle(list, context, "Не отправлять «печатает»", GhostMode.KEY_NO_TYPING, GhostMode.get(GhostMode.KEY_NO_TYPING, true), true, true);
+                  addToggle(list, context, "Автоматический «офлайн»", GhostMode.KEY_AUTO_OFFLINE, GhostMode.get(GhostMode.KEY_AUTO_OFFLINE, true), false, true);
+                  addInfo(list, context, "Главный переключатель включает выбранные ниже опции. Каждую опцию можно отключить отдельно.");
+
+                  addToggle(list, context, "Читать при действиях", GhostMode.KEY_READ_ON_ACTIONS, GhostMode.get(GhostMode.KEY_READ_ON_ACTIONS, true), false, true);
+                  addInfo(list, context, "Автоматически читает сообщения чата при отправке нового сообщения или реакции.");
+
+                  addHeader(list, context, "Профиль");
+                  addToggle(list, context, "Показывать ID в профиле", KEY_SHOW_ID, showId(), false, false);
+                  addInfo(list, context, "");
 
                   fragmentView = scroll;
                   return fragmentView;
@@ -239,6 +277,194 @@ jobs:
           '''
           open(UI + "FluxSettingsActivity.java", "w", encoding="utf-8").write(java)
           print("FluxSettingsActivity.java written")
+          PY
+
+      - name: Add Ghost Mode (AyuGram-style)
+        run: |
+          python3 - <<'PY'
+          import re
+          import sys
+
+          J = "TMessagesProj/src/main/java/org/telegram/"
+
+
+          def load(p):
+              return open(J + p, encoding="utf-8").read()
+
+
+          def save(p, s):
+              open(J + p, "w", encoding="utf-8").write(s)
+
+
+          def patch(s, name, pat, fn, count=1):
+              ms = list(re.finditer(pat, s))
+              if len(ms) != count:
+                  print("FAIL %s: matches=%d (expected %d)" % (name, len(ms), count))
+                  sys.exit(1)
+              for m in reversed(ms):
+                  s = s[:m.start()] + fn(m) + s[m.end():]
+              print("ok", name)
+              return s
+
+
+          # ---------------- MessagesController ----------------
+          f = "messenger/MessagesController.java"
+          s = load(f)
+
+          # 1. не отправлять чтение (откладываем до действия пользователя)
+          s = patch(s, "mc-complete-read",
+                    r"private void completeReadTask\(ReadTask task\) \{",
+                    lambda m: '''private boolean ghostBypassRead;
+              private final java.util.HashMap<String, ReadTask> ghostPendingReads = new java.util.HashMap<>();
+
+              public void flushGhostReads(final long dialogId) {
+                  Utilities.stageQueue.postRunnable(() -> {
+                      ArrayList<ReadTask> toSend = new ArrayList<>();
+                      String prefix = dialogId + "_";
+                      java.util.Iterator<java.util.Map.Entry<String, ReadTask>> it = ghostPendingReads.entrySet().iterator();
+                      while (it.hasNext()) {
+                          java.util.Map.Entry<String, ReadTask> e = it.next();
+                          if (e.getKey().startsWith(prefix)) {
+                              toSend.add(e.getValue());
+                              it.remove();
+                          }
+                      }
+                      ghostBypassRead = true;
+                      try {
+                          for (int i = 0; i < toSend.size(); i++) {
+                              completeReadTask(toSend.get(i));
+                          }
+                      } finally {
+                          ghostBypassRead = false;
+                      }
+                  });
+              }
+
+              public void ghostOnUserAction(long dialogId) {
+                  if (!GhostMode.isOn()) {
+                      return;
+                  }
+                  if (GhostMode.readOnActions()) {
+                      flushGhostReads(dialogId);
+                  }
+                  if (GhostMode.autoOffline()) {
+                      Utilities.stageQueue.postRunnable(() -> {
+                          TLRPC.TL_account_updateStatus offlineReq = new TLRPC.TL_account_updateStatus();
+                          offlineReq.offline = true;
+                          getConnectionsManager().sendRequest(offlineReq, (response, error) -> {});
+                      }, 3000);
+                  }
+              }
+
+              private void completeReadTask(ReadTask task) {
+                  if (!ghostBypassRead && GhostMode.blockRead()) {
+                      ghostPendingReads.put(task.dialogId + "_" + task.replyId, task);
+                      return;
+                  }''')
+
+          # 2. не отправлять «онлайн»
+          s = patch(s, "mc-online",
+                    r"if \(!ignoreSetOnline && getConnectionsManager\(\)\.getPauseTime\(\) == 0",
+                    lambda m: "if (!ignoreSetOnline && !GhostMode.blockOnline() && getConnectionsManager().getPauseTime() == 0")
+          s = patch(s, "mc-offline",
+                    r"\} else if \(statusSettingState != 2 && !offlineSent && Math\.abs\(System\.currentTimeMillis\(\) - getConnectionsManager\(\)\.getPauseTime\(\)\) >= 2000\) \{",
+                    lambda m: "} else if ((!GhostMode.blockOnline() || GhostMode.autoOffline()) && statusSettingState != 2 && !offlineSent && Math.abs(System.currentTimeMillis() - getConnectionsManager().getPauseTime()) >= 2000) {")
+
+          # 3. не отправлять «печатает»
+          s = patch(s, "mc-typing",
+                    r"public boolean sendTyping\(long dialogId, long threadMsgId, int action, String emojicon, int classGuid\) \{",
+                    lambda m: m.group(0) + "\n        if (GhostMode.blockTyping()) {\n            return false;\n        }")
+          save(f, s)
+
+          # ---------------- SendMessagesHelper ----------------
+          f = "messenger/SendMessagesHelper.java"
+          s = load(f)
+          s = patch(s, "smh-send",
+                    r"\n([ \t]*)long peer = sendMessageParams\.peer;",
+                    lambda m: m.group(0) + "\n" + m.group(1) + "getMessagesController().ghostOnUserAction(peer);")
+          s = patch(s, "smh-reaction",
+                    r"public void sendReaction\(MessageObject messageObject, ArrayList<ReactionsLayoutInBubble\.VisibleReaction> visibleReactions, ReactionsLayoutInBubble\.VisibleReaction addedReaction, boolean big, boolean addToRecent, BaseFragment parentFragment, Runnable callback\) \{",
+                    lambda m: m.group(0) + "\n        if (messageObject != null) {\n            getMessagesController().ghostOnUserAction(messageObject.getDialogId());\n        }")
+          save(f, s)
+
+          # ---------------- StoriesController ----------------
+          f = "ui/Stories/StoriesController.java"
+          s = load(f)
+          s = patch(s, "st-import", r"(package [^;]+;\n)",
+                    lambda m: m.group(1) + "\nimport org.telegram.messenger.GhostMode;")
+          s = patch(s, "st-read",
+                    r"(req\.max_id = storyItem\.id;\s*\n)([ \t]*)(ConnectionsManager\.getInstance\(currentAccount\)\.sendRequest\(req, \(response, error\) -> \{\}\);)",
+                    lambda m: m.group(1) + m.group(2) + "if (!GhostMode.blockStories()) {\n" + m.group(2) + "    " + m.group(3) + "\n" + m.group(2) + "}")
+          s = patch(s, "st-views",
+                    r"(req\.id\.add\(storyId\);\s*\n)([ \t]*)(ConnectionsManager\.getInstance\(currentAccount\)\.sendRequest\(req, \(response, error\) -> \{\}\);)",
+                    lambda m: m.group(1) + m.group(2) + "if (!GhostMode.blockStories()) {\n" + m.group(2) + "    " + m.group(3) + "\n" + m.group(2) + "}")
+          save(f, s)
+          print("ghost patches applied")
+
+          java = '''package org.telegram.messenger;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          public class GhostMode {
+
+              private static final String PREFS = "fluxgram";
+
+              public static final String KEY_ENABLED = "ghost_enabled";
+              public static final String KEY_NO_READ = "ghost_no_read";
+              public static final String KEY_NO_STORIES = "ghost_no_stories";
+              public static final String KEY_NO_ONLINE = "ghost_no_online";
+              public static final String KEY_NO_TYPING = "ghost_no_typing";
+              public static final String KEY_AUTO_OFFLINE = "ghost_auto_offline";
+              public static final String KEY_READ_ON_ACTIONS = "ghost_read_on_actions";
+
+              private static SharedPreferences prefs() {
+                  return ApplicationLoader.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+              }
+
+              public static boolean get(String key, boolean def) {
+                  try {
+                      return prefs().getBoolean(key, def);
+                  } catch (Throwable t) {
+                      return def;
+                  }
+              }
+
+              public static void set(String key, boolean value) {
+                  prefs().edit().putBoolean(key, value).apply();
+              }
+
+              public static boolean isOn() {
+                  return get(KEY_ENABLED, false);
+              }
+
+              public static boolean blockRead() {
+                  return isOn() && get(KEY_NO_READ, true);
+              }
+
+              public static boolean blockStories() {
+                  return isOn() && get(KEY_NO_STORIES, true);
+              }
+
+              public static boolean blockOnline() {
+                  return isOn() && get(KEY_NO_ONLINE, true);
+              }
+
+              public static boolean blockTyping() {
+                  return isOn() && get(KEY_NO_TYPING, true);
+              }
+
+              public static boolean autoOffline() {
+                  return isOn() && get(KEY_AUTO_OFFLINE, true);
+              }
+
+              public static boolean readOnActions() {
+                  return isOn() && get(KEY_READ_ON_ACTIONS, true);
+              }
+          }
+          '''
+          open(J + "messenger/GhostMode.java", "w", encoding="utf-8").write(java)
+          print("GhostMode.java written")
           PY
 
       - name: Android SDK licenses and packages
