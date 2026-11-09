@@ -21,17 +21,18 @@ jobs:
         with:
           go-version: stable
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Install NDK and SDK parts
+      - name: Android SDK licenses and packages
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
+          set +o pipefail
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
           # Версию NDK берём из build.gradle проекта (строка ndkVersion)
           NDK=$(grep -rhoE 'ndkVersion[ =]+"[0-9.]+"' --include=build.gradle . | head -1 | grep -oE '[0-9.]+' | head -1)
-          [ -n "$NDK" ] && sdkmanager "ndk;$NDK" || true
+          [ -n "$NDK" ] && "$SDKM" "ndk;$NDK" || true
 
       - name: Build
         run: |
